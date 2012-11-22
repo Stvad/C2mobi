@@ -1,0 +1,180 @@
+#!/bin/bash
+# скрипт для преобразования PDF и DJVU файлов в формат для эклектронной книги 1024x768
+
+# использование: скрипт документ -in_[pdf|djvu] -out_[pdf|djvu|mobi] -img_format_[png|jpg] "book title"
+in_format=$2
+out_format=$3
+img_format=$4
+title=$5
+
+if [ "$img_format" = "-img_format_png" ];
+then
+  img_format=png
+else
+  img_format=jpg
+fi
+
+mask="*.*"
+
+if [ "$in_format" = "-in_djvu" ];
+then
+   # если это DJVU то приобразовываем его в многостраничный TIFF
+   ddjvu -format=tiff $1 1.tiff
+   # режем получившийся TIFF в по страницам
+   tiffsplit 1.tiff
+   rm 1.tiff
+   mask="x*.tif"
+else
+   # режем PDF по страницам
+   pdftk $1 burst
+   mask="pg_*.pdf"
+fi
+
+pages=""
+
+# обработать все страницы
+
+if [ "$out_format" = "-out_mobi" ];
+   then
+   echo "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<package version=\"2.0\" unique-identifier=\"PrimaryID\" xmlns=\"http://www.idpf.org/2007/opf\">
+	<metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:opf=\"http://www.idpf.org/2007/opf\">
+		<dc:title>"$title"</dc:title>
+		<dc:language>en-US</dc:language>
+		<dc:identifier id=\"PrimaryID\" opf:scheme=\"ISBN\">ISBN</dc:identifier>
+		<dc:creator opf:role=\"aut\" opf:file-as=\"Vladyslav Sitalo\">Vladyslav Sitalo</dc:creator>
+		<dc:publisher>Publisher</dc:publisher>
+		<dc:date opf:event=\"publication\">2012</dc:date>
+		<dc:rights>2012 by Stvad</dc:rights>
+		<meta name=\"cover\" content=\"my_cover_image\"/>
+        <meta name=\"book-type\" content=\"comic\"/>
+		<meta name=\"zero-gutter\" content=\"true\"/>
+		<meta name=\"zero-margin\" content=\"true\"/>
+		<meta name=\"RegionMagnification\" content=\"true\"/>
+        <meta name=\"fixed-layout\" content=\"true\"/>
+        <meta name=\"original-resolution\" content=\"1024x768\"/>
+	</metadata>
+	<manifest>" >> tout.opf
+fi
+
+for p in `ls -1 $mask`; do
+
+   # конвертируем страничку в JPG и преобразуем в оттенки серого
+   if [ "$in_format" = "-in_djvu" ];
+   then
+      convert -colorspace gray -normalize -contrast $p $p.${img_format}
+   else
+      convert -density 300 -colorspace gray -normalize -contrast $p $p.${img_format}
+   fi
+
+   rm $p
+
+   p=${p}.${img_format}
+
+   # обрезаем все поля автоматически
+   convert -trim +repage $p $p
+   
+   # вырезаем верхнюю часть картинки
+   convert -gravity North -crop 100%x35% +repage $p 1_$p
+   # вырезаем вторую часть картинки
+   convert -gravity Center -crop 100%x35% +repage $p 2_$p
+   # вырезаем третью часть картинки
+   convert -gravity South -crop 100%x35% +repage $p 3_$p
+
+   rm $p
+   
+   # меняем разрешение на 800х600
+   convert -scale 1024x768! 1_$p 1_$p
+   convert -scale 1024x768! 2_$p 2_$p
+   convert -scale 1024x768! 3_$p 3_$p
+   
+   # разворачиваем на 90 градусов
+   convert -rotate 90 1_$p 1_$p
+   convert -rotate 90 2_$p 2_$p
+   convert -rotate 90 3_$p 3_$p
+   
+   # улучшаем качество картинки
+   convert -sharpen 0.01 1_$p 1_$p
+   convert -sharpen 0.01 2_$p 2_$p
+   convert -sharpen 0.01 3_$p 3_$p
+   
+   # если выходной файл DJVU
+   if [ "$out_format" = "-out_djvu" ];
+   then
+      # конвертируем странички в djvu-формат
+      c44 -dpi 150 1_$p 1_$p.djvu
+      c44 -dpi 150 2_$p 2_$p.djvu
+      c44 -dpi 150 3_$p 3_$p.djvu
+      
+      # список страничек
+      pages=${pages}' 1_'${p}'.djvu 2_'${p}'.djvu 3_'${p}'.djvu'
+       rm 1_$p 2_$p 3_$p
+    elif [ "$out_format" = "-out_pdf" ];
+      then
+      convert -define pdf:use-trimbox=true -density 200 1_$p 1_$p.pdf
+      convert -define pdf:use-trimbox=true -density 200 2_$p 2_$p.pdf
+      convert -define pdf:use-trimbox=true -density 200 3_$p 3_$p.pdf
+      
+      # список страничек
+      pages=${pages}' 1_'${p}'.pdf 2_'${p}'.pdf 3_'${p}'.pdf'
+       rm 1_$p 2_$p 3_$p
+    else
+      echo "<html>
+      <body>
+	<div><img src=\""1_$p"\"/></div>
+	</body>
+	</html>" >> 1_$p.html
+      echo "<item id=\"Page_"1_$p"\" href=\""1_$p.html"\" media-type=\"application/xhtml+xml\"/>" >> tout.opf
+      
+      echo "<itemref idref=\"Page_"1_$p"\" />">> spinetmp 
+      
+      #2
+      echo "<html>
+      <body>
+	<div><img src=\""2_$p"\"/></div>
+	</body>
+	</html>" >> 2_$p.html
+      echo "<item id=\"Page_"2_$p"\" href=\""2_$p.html"\" media-type=\"application/xhtml+xml\"/>" >> tout.opf
+      
+      echo "<itemref idref=\"Page_"2_$p"\" />">> spinetmp 
+      #3
+            echo "<html>
+      <body>
+	<div><img src=\""3_$p"\"/></div>
+	</body>
+	</html>" >> 3_$p.html
+      echo "<item id=\"Page_"3_$p"\" href=\""3_$p.html"\" media-type=\"application/xhtml+xml\"/>" >> tout.opf
+      
+      echo "<itemref idref=\"Page_"3_$p"\" />">> spinetmp 
+      pages=${pages}' 1_'${p}'.html 2_'${p}'.html 3_'${p}'.html'
+      pages=${pages}' 1_'${p}' 2_'${p}' 3_'${p}
+      
+    fi
+
+   
+done
+
+# создаем выходной файл книжки
+if [ "$out_format" = "-out_djvu" ];
+then
+  # собрать в единый DjVu
+  djvm -c out.djvu $pages
+elif [ "$out_format" = "-out_pdf" ];
+then
+  # собрать в единый PDF
+  pdftk $pages cat output out.pdf
+else
+
+  echo "</manifest>
+	
+	<spine>" >>tout.opf
+  cat spinetmp >> tout.opf
+  echo "</spine>
+	
+		
+</package>" >>tout.opf
+  kindlegen tout.opf -c1
+  
+fi
+
+rm $pages
